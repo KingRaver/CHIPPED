@@ -1,0 +1,145 @@
+// First, install required packages:
+// npm install node-nfc crypto web-nfc
+
+const { NFCReader, NFCWriter } = require('node-nfc');
+const SecureNFCTag = require('./SecureNFCTag'); // Our previous secure implementation
+
+class NFCInterface {
+    constructor() {
+        this.reader = new NFCReader();
+        this.writer = new NFCWriter();
+        this.secureNFC = new SecureNFCTag();
+    }
+
+    async initialize() {
+        try {
+            // Check if NFC is available
+            if (!('NDEFReader' in window)) {
+                throw new Error('NFC is not supported on this device');
+            }
+
+            // Initialize NFC reader
+            await this.reader.initialize();
+            console.log('NFC Reader initialized');
+
+            // Initialize NFC writer
+            await this.writer.initialize();
+            console.log('NFC Writer initialized');
+
+            return true;
+        } catch (error) {
+            console.error('Error initializing NFC:', error);
+            throw error;
+        }
+    }
+
+    async startReading() {
+        try {
+            this.reader.addEventListener('reading', async ({ message, serialNumber }) => {
+                try {
+                    // Decrypt and validate the read data
+                    const decryptedData = await this.secureNFC.decryptData(
+                        message.records[0].data,
+                        this.currentKey,
+                        message.records[0].iv,
+                        message.records[0].authTag
+                    );
+
+                    console.log('Read data:', decryptedData);
+                    return decryptedData;
+                } catch (error) {
+                    console.error('Error processing read data:', error);
+                    throw error;
+                }
+            });
+
+            await this.reader.scan();
+        } catch (error) {
+            console.error('Error starting NFC reader:', error);
+            throw error;
+        }
+    }
+
+    async writeTag(data) {
+        try {
+            // Validate data before writing
+            if (!this.secureNFC.validateData(data)) {
+                throw new Error('Invalid data format');
+            }
+
+            // Generate a new encryption key for this write
+            const { key } = await this.secureNFC.generateKey(process.env.NFC_SECRET_KEY);
+            this.currentKey = key;
+
+            // Encrypt the data
+            const encryptedData = await this.secureNFC.encryptData(data, key);
+
+            // Format the NDEF message
+            const ndefMessage = this.secureNFC.formatNDEFMessage({
+                data: encryptedData.encryptedData,
+                iv: encryptedData.iv,
+                authTag: encryptedData.authTag,
+                metadata: {
+                    timestamp: Date.now(),
+                    version: '1.0'
+                }
+            });
+
+            // Write to tag
+            await this.writer.write(ndefMessage);
+            console.log('Data written successfully');
+            return true;
+        } catch (error) {
+            console.error('Error writing to tag:', error);
+            throw error;
+        }
+    }
+}
+
+// Example implementation
+async function main() {
+    try {
+        // Create and initialize NFC interface
+        const nfcInterface = new NFCInterface();
+        await nfcInterface.initialize();
+
+        // Example data to write
+        const testData = {
+            id: crypto.randomBytes(16).toString('hex'),
+            timestamp: Date.now(),
+            type: 'contact',
+            payload: {
+                name: 'John Doe',
+                email: 'john@example.com',
+                phone: '+1234567890'
+            }
+        };
+
+        // Write data to tag
+        await nfcInterface.writeTag(testData);
+
+        // Start reading tags
+        await nfcInterface.startReading();
+
+    } catch (error) {
+        console.error('Error in main:', error);
+    }
+}
+
+// Configuration and environment setup
+const config = {
+    nfc: {
+        readTimeout: 5000, // 5 seconds
+        writeTimeout: 3000, // 3 seconds
+        maxRetries: 3
+    },
+    security: {
+        keyRotationInterval: 24 * 60 * 60 * 1000, // 24 hours
+        maxMessageAge: 24 * 60 * 60 * 1000 // 24 hours
+    }
+};
+
+module.exports = {
+    NFCInterface,
+    config
+};
