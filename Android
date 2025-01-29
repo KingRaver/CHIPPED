@@ -1,0 +1,190 @@
+// Android-specific NFC implementation using Web NFC API
+class AndroidNFCInterface {
+    constructor() {
+        this.ndef = new NDEFReader();
+        this.secureNFC = new SecureNFCTag();
+        this.isReading = false;
+    }
+
+    async checkPermission() {
+        try {
+            // Request NFC permissions
+            await this.ndef.scan();
+            return true;
+        } catch (error) {
+            console.error('NFC Permission Error:', error);
+            return false;
+        }
+    }
+
+    async initialize() {
+        try {
+            // Check if Web NFC is available (Android Chrome)
+            if (typeof NDEFReader === 'undefined') {
+                throw new Error('Web NFC is not supported. Please use Android Chrome.');
+            }
+
+            const hasPermission = await this.checkPermission();
+            if (!hasPermission) {
+                throw new Error('NFC permission denied');
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error initializing Android NFC:', error);
+            throw error;
+        }
+    }
+
+    async startReading() {
+        if (this.isReading) return;
+       
+        try {
+            this.isReading = true;
+
+            this.ndef.addEventListener('reading', async ({ message, serialNumber }) => {
+                try {
+                    for (const record of message.records) {
+                        if (record.recordType === "mime" && record.mediaType === "application/json") {
+                            const textDecoder = new TextDecoder();
+                            const data = JSON.parse(textDecoder.decode(record.data));
+
+                            // Decrypt and validate the read data
+                            const decryptedData = await this.secureNFC.decryptData(
+                                data.data,
+                                this.currentKey,
+                                data.iv,
+                                data.authTag
+                            );
+
+                            console.log('Read data:', decryptedData);
+                            // Trigger your callback or event handler here
+                            this.onDataRead && this.onDataRead(decryptedData);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error processing NFC data:', error);
+                    this.onError && this.onError(error);
+                }
+            });
+
+            this.ndef.addEventListener('readingerror', () => {
+                console.error('Error reading NFC tag');
+                this.onError && this.onError(new Error('Failed to read NFC tag'));
+            });
+
+            await this.ndef.scan();
+            console.log('NFC scanning started');
+
+        } catch (error) {
+            this.isReading = false;
+            console.error('Error starting NFC reader:', error);
+            throw error;
+        }
+    }
+
+    async writeTag(data) {
+        try {
+            // Validate data before writing
+            if (!this.secureNFC.validateData(data)) {
+                throw new Error('Invalid data format');
+            }
+
+            // Generate a new encryption key for this write
+            const { key } = await this.secureNFC.generateKey(sessionStorage.getItem('NFC_SECRET_KEY'));
+            this.currentKey = key;
+
+            // Encrypt the data
+            const encryptedData = await this.secureNFC.encryptData(data, key);
+
+            // Create the NDEF message
+            const message = {
+                records: [{
+                    recordType: "mime",
+                    mediaType: "application/json",
+                    data: JSON.stringify({
+                        data: encryptedData.encryptedData,
+                        iv: encryptedData.iv,
+                        authTag: encryptedData.authTag,
+                        metadata: {
+                            timestamp: Date.now(),
+                            version: '1.0'
+                        }
+                    })
+                }]
+            };
+
+            // Write to tag
+            await this.ndef.write(message);
+            console.log('Data written successfully');
+            return true;
+
+        } catch (error) {
+            console.error('Error writing to tag:', error);
+            throw error;
+        }
+    }
+
+    stopReading() {
+        this.isReading = false;
+        // Note: Web NFC API doesn't provide a direct way to stop scanning
+        // The scan will stop when the page is unloaded
+    }
+
+    // Set callbacks for events
+    setOnDataRead(callback) {
+        this.onDataRead = callback;
+    }
+
+    setOnError(callback) {
+        this.onError = callback;
+    }
+}
+
+// Example usage
+async function main() {
+    try {
+        const nfc = new AndroidNFCInterface();
+        await nfc.initialize();
+
+        // Set up event handlers
+        nfc.setOnDataRead((data) => {
+            console.log('NFC Data received:', data);
+        });
+
+        nfc.setOnError((error) => {
+            console.error('NFC Error:', error);
+        });
+
+        // Start reading
+        await nfc.startReading();
+
+        // Example write data
+        const testData = {
+            id: crypto.randomUUID(),
+            timestamp: Date.now(),
+            type: 'contact',
+            payload: {
+                name: 'John Doe',
+                email: 'john@example.com',
+                phone: '+1234567890'
+            }
+        };
+
+        // Write data when needed
+        document.getElementById('writeButton')?.addEventListener('click', async () => {
+            try {
+                await nfc.writeTag(testData);
+                console.log('Write successful');
+            } catch (error) {
+                console.error('Write failed:', error);
+            }
+        });
+
+    } catch (error) {
+        console.error('Main error:', error);
+    }
+}
+
+export default AndroidNFCInterface;
+
