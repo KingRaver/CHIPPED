@@ -1,0 +1,180 @@
+import React, { useState, useEffect } from 'react';
+import { AlertCircle, CheckCircle, Smartphone, Radio, Edit3 } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+
+const NFCTestUI = () => {
+  const [nfcStatus, setNfcStatus] = useState('initializing');
+  const [lastReadData, setLastReadData] = useState(null);
+  const [writeMode, setWriteMode] = useState(false);
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    customField: ''
+  });
+  const [logs, setLogs] = useState([]);
+
+  const addLog = (message, type = 'info') => {
+    setLogs(prev => [{
+      message,
+      type,
+      timestamp: new Date().toLocaleTimeString()
+    }, ...prev].slice(0, 10));
+  };
+
+  useEffect(() => {
+    const initializeNFC = async () => {
+      try {
+        // Check if running on Android Chrome
+        if (typeof NDEFReader === 'undefined') {
+          setNfcStatus('unsupported');
+          addLog('NFC not supported. Please use Android Chrome.', 'error');
+          return;
+        }
+
+        const nfc = new NDEFReader();
+        await nfc.scan();
+        setNfcStatus('ready');
+        addLog('NFC initialized successfully', 'success');
+
+        nfc.addEventListener('reading', ({ message }) => {
+          addLog('NFC tag read', 'success');
+          // Process the read message here
+          setLastReadData(message);
+        });
+
+        nfc.addEventListener('readingerror', () => {
+          addLog('Error reading NFC tag', 'error');
+        });
+
+      } catch (error) {
+        setNfcStatus('error');
+        addLog(`NFC Error: ${error.message}`, 'error');
+      }
+    };
+
+    initializeNFC();
+  }, []);
+
+  const handleWrite = async () => {
+    try {
+      setWriteMode(true);
+      addLog('Waiting for NFC tag...', 'info');
+     
+      const nfc = new NDEFReader();
+      await nfc.write({
+        records: [{
+          recordType: "mime",
+          mediaType: "application/json",
+          data: JSON.stringify({
+            ...formData,
+            timestamp: Date.now()
+          })
+        }]
+      });
+     
+      addLog('Data written successfully', 'success');
+    } catch (error) {
+      addLog(`Write error: ${error.message}`, 'error');
+    } finally {
+      setWriteMode(false);
+    }
+  };
+
+  return (
+    <div className="p-4 max-w-md mx-auto space-y-6">
+      {/* Status Banner */}
+      <Alert variant={nfcStatus === 'ready' ? 'default' : 'destructive'}>
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>
+          Status: {nfcStatus.charAt(0).toUpperCase() + nfcStatus.slice(1)}
+        </AlertDescription>
+      </Alert>
+
+      {/* Write Form */}
+      <div className="space-y-4 bg-white p-4 rounded-lg shadow">
+        <h2 className="text-xl font-bold flex items-center gap-2">
+          <Edit3 className="h-5 w-5" />
+          Write NFC Tag
+        </h2>
+       
+        <input
+          type="text"
+          placeholder="Name"
+          className="w-full p-2 border rounded"
+          value={formData.name}
+          onChange={e => setFormData(prev => ({...prev, name: e.target.value}))}
+        />
+       
+        <input
+          type="email"
+          placeholder="Email"
+          className="w-full p-2 border rounded"
+          value={formData.email}
+          onChange={e => setFormData(prev => ({...prev, email: e.target.value}))}
+        />
+       
+        <input
+          type="tel"
+          placeholder="Phone"
+          className="w-full p-2 border rounded"
+          value={formData.phone}
+          onChange={e => setFormData(prev => ({...prev, phone: e.target.value}))}
+        />
+       
+        <input
+          type="text"
+          placeholder="Custom Field"
+          className="w-full p-2 border rounded"
+          value={formData.customField}
+          onChange={e => setFormData(prev => ({...prev, customField: e.target.value}))}
+        />
+
+        <button
+          onClick={handleWrite}
+          disabled={nfcStatus !== 'ready' || writeMode}
+          className="w-full bg-blue-500 text-white p-2 rounded disabled:bg-gray-300 disabled:cursor-not-allowed"
+        >
+          {writeMode ? 'Waiting for Tag...' : 'Write to NFC Tag'}
+        </button>
+      </div>
+
+      {/* Last Read Data */}
+      {lastReadData && (
+        <div className="bg-white p-4 rounded-lg shadow">
+          <h2 className="text-xl font-bold flex items-center gap-2">
+            <Radio className="h-5 w-5" />
+            Last Read Data
+          </h2>
+          <pre className="mt-2 bg-gray-50 p-2 rounded overflow-x-auto">
+            {JSON.stringify(lastReadData, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {/* Activity Log */}
+      <div className="bg-white p-4 rounded-lg shadow">
+        <h2 className="text-xl font-bold mb-2">Activity Log</h2>
+        <div className="space-y-2">
+          {logs.map((log, index) => (
+            <div
+              key={index}
+              className={`p-2 rounded flex items-center gap-2 ${
+                log.type === 'error' ? 'bg-red-50 text-red-700' :
+                log.type === 'success' ? 'bg-green-50 text-green-700' :
+                'bg-gray-50 text-gray-700'
+              }`}
+            >
+              {log.type === 'error' ? <AlertCircle className="h-4 w-4" /> :
+               log.type === 'success' ? <CheckCircle className="h-4 w-4" /> :
+               <Smartphone className="h-4 w-4" />}
+              <span className="text-sm">{log.timestamp}: {log.message}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default NFCTestUI;
