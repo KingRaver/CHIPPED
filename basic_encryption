@@ -1,0 +1,194 @@
+// Required crypto for encryption
+const crypto = require('crypto');
+
+class SecureNFCTag {
+    constructor() {
+        this.algorithm = 'aes-256-gcm';
+        this.keyLength = 32; // 256 bits
+        this.ivLength = 16; // 16 bytes
+        this.saltLength = 64; // 64 bytes for extra security
+        this.tagLength = 16; // 16 bytes for GCM mode
+    }
+
+    // Generate secure encryption key
+    async generateKey(password) {
+        const salt = crypto.randomBytes(this.saltLength);
+        return new Promise((resolve, reject) => {
+            crypto.pbkdf2(password, salt, 100000, this.keyLength, 'sha512', (err, key) => {
+                if (err) reject(err);
+                resolve({ key, salt });
+            });
+        });
+    }
+
+    // Encrypt data before writing to NFC
+    async encryptData(data, key) {
+        const iv = crypto.randomBytes(this.ivLength);
+        const cipher = crypto.createCipheriv(this.algorithm, key, iv);
+        
+        let encryptedData = cipher.update(JSON.stringify(data), 'utf8', 'hex');
+        encryptedData += cipher.final('hex');
+        
+        const authTag = cipher.getAuthTag();
+        
+        return {
+            encryptedData,
+            iv: iv.toString('hex'),
+            authTag: authTag.toString('hex')
+        };
+    }
+
+    // Decrypt data read from NFC
+    async decryptData(encryptedData, key, iv, authTag) {
+        const decipher = crypto.createDecipheriv(this.algorithm, key, Buffer.from(iv, 'hex'));
+        decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+        
+        let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        
+        return JSON.parse(decrypted);
+    }
+
+    // Format data for NFC NDEF message
+    formatNDEFMessage(data) {
+        return {
+            records: [{
+                recordType: "mime",
+                mimeType: "application/json",
+                data: JSON.stringify(data)
+            }]
+        };
+    }
+
+    // Validate data structure before writing
+    validateData(data) {
+        const requiredFields = ['id', 'timestamp', 'type', 'payload'];
+        for (const field of requiredFields) {
+            if (!data.hasOwnProperty(field)) {
+                throw new Error(`Missing required field: ${field}`);
+            }
+        }
+        return true;
+    }
+
+    // Write data to NFC tag
+    async writeToTag(writer, data, key) {
+        try {
+            this.validateData(data);
+            
+            // Add security metadata
+            data.timestamp = Date.now();
+            data.version = '1.0';
+            
+            // Encrypt the data
+            const encryptedResult = await this.encryptData(data, key);
+            
+            // Prepare NDEF message
+            const ndefMessage = this.formatNDEFMessage({
+                data: encryptedResult.encryptedData,
+                iv: encryptedResult.iv,
+                authTag: encryptedResult.authTag,
+                metadata: {
+                    timestamp: data.timestamp,
+                    version: data.version
+                }
+            });
+
+            // Write to NFC tag
+            await writer.write(ndefMessage);
+            return true;
+        } catch (error) {
+            console.error('Error writing to NFC tag:', error);
+            throw error;
+        }
+    }
+
+    // Read data from NFC tag
+    async readFromTag(reader, key) {
+        try {
+            const message = await reader.read();
+            const parsedData = JSON.parse(message.records[0].data);
+            
+            // Decrypt the data
+            const decryptedData = await this.decryptData(
+                parsedData.data,
+                key,
+                parsedData.iv,
+                parsedData.authTag
+            );
+            
+            // Validate timestamp (e.g., check if expired)
+            const currentTime = Date.now();
+            const messageAge = currentTime - decryptedData.timestamp;
+            if (messageAge > 24 * 60 * 60 * 1000) { // 24 hours
+                throw new Error('Data expired');
+            }
+            
+            return decryptedData;
+        } catch (error) {
+            console.error('Error reading from NFC tag:', error);
+            throw error;
+        }
+    }
+
+    // Generate a unique ID for each tag
+    generateTagId() {
+        return crypto.randomBytes(16).toString('hex');
+    }
+}
+
+// Example usage:
+async function demonstrateSecureNFC() {
+    const secureNFC = new SecureNFCTag();
+    
+    // Generate encryption key (in real usage, this would be securely stored)
+    const password = 'user-provided-password';
+    const { key, salt } = await secureNFC.generateKey(password);
+    
+    // Example data to write
+    const data = {
+        id: secureNFC.generateTagId(),
+        timestamp: Date.now(),
+        type: 'contact',
+        payload: {
+            name: 'John Doe',
+            email: 'john@example.com',
+            phone: '+1234567890'
+        }
+    };
+
+    // Example write operation (actual NFC writer would be needed)
+    const mockWriter = {
+        write: async (message) => console.log('Writing to NFC:', message)
+    };
+    
+    // Example read operation (actual NFC reader would be needed)
+    const mockReader = {
+        read: async () => ({
+            records: [{
+                data: JSON.stringify({
+                    data: 'encrypted-data',
+                    iv: 'iv-data',
+                    authTag: 'auth-tag',
+                    metadata: {
+                        timestamp: Date.now(),
+                        version: '1.0'
+                    }
+                })
+            }]
+        })
+    };
+
+    try {
+        // Write data
+        await secureNFC.writeToTag(mockWriter, data, key);
+        
+        // Read data
+        const readData = await secureNFC.readFromTag(mockReader, key);
+        console.log('Read data:', readData);
+    } catch (error) {
+        console.error('Error:', error);
+    }
+}
+
+module.exports = SecureNFCTag;
